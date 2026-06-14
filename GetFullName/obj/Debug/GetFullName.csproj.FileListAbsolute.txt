@@ -1,0 +1,14 @@
+D:\Important\VS files\GetFullName\bin\Debug\GetFullName.exe.config
+D:\Important\VS files\GetFullName\bin\Debug\GetFullName.exe
+D:\Important\VS files\GetFullName\bin\Debug\GetFullName.pdb
+D:\Important\VS files\GetFullName\bin\Debug\Newtonsoft.Json.dll
+D:\Important\VS files\GetFullName\bin\Debug\Newtonsoft.Json.xml
+D:\Important\VS files\GetFullName\obj\Debug\GetFullName.csproj.AssemblyReference.cache
+D:\Important\VS files\GetFullName\obj\Debug\GetFullName.GetFullname.resources
+D:\Important\VS files\GetFullName\obj\Debug\GetFullName.Properties.Resources.resources
+D:\Important\VS files\GetFullName\obj\Debug\GetFullName.csproj.GenerateResource.cache
+D:\Important\VS files\GetFullName\obj\Debug\GetFullName.csproj.CoreCompileInputs.cache
+D:\Important\VS files\GetFullName\obj\Debug\GetFullN.A2F52249.Up2Date
+D:\Important\VS files\GetFullName\obj\Debug\GetFullName.exe
+D:\Important\VS files\GetFullName\obj\Debug\GetFullName.pdb
+D:\Important\VS files\GetFullName\obj\Debug\GetFullName.exe.config
