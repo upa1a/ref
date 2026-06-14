@@ -1,0 +1,1385 @@
+using MySql.Data.MySqlClient;
+using System.Data;
+using System.Collections.Generic;
+using System;
+
+namespace Media_diary
+{
+    public class DBClass
+    {
+        private readonly string connectionString = "server=localhost;user=root;database=media_reviews;port=3306;password=root";
+        public int Execute(string query, Dictionary<string, object> parameters = null)
+        {
+            using (MySqlConnection connection = new MySqlConnection(connectionString))
+            {
+                connection.Open();
+                using (MySqlCommand command = new MySqlCommand(query, connection))
+                {
+                    if (parameters != null)
+                    {
+                        foreach (var param in parameters)
+                        {
+                            command.Parameters.AddWithValue(param.Key, param.Value);
+                        }
+                    }
+                    return command.ExecuteNonQuery();
+                }
+            }
+        }
+        public DataTable Select(string query, Dictionary<string, object> parameters = null)
+        {
+            DataTable table = new DataTable();
+            using (MySqlConnection connection = new MySqlConnection(connectionString))
+            {
+                connection.Open();
+                using (MySqlCommand command = new MySqlCommand(query, connection))
+                {
+                    if (parameters != null)
+                    {
+                        foreach (var param in parameters)
+                        {
+                            command.Parameters.AddWithValue(param.Key, param.Value);
+                        }
+                    }
+                    using (MySqlDataAdapter adapter = new MySqlDataAdapter(command))
+                    {
+                        adapter.Fill(table);
+                    }
+                }
+            }
+            return table;
+        }
+    }
+}
+
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace Media_diary
+{
+    public partial class CaptchaForm : Form
+    {
+        private PictureBox[] slots;
+        private PictureBox firstSelected;
+        private int fails = 0;
+        int currentUserId;
+        public CaptchaForm(int userId)
+        {
+            InitializeComponent();
+            this.Load += new System.EventHandler(this.captchaForm_Load);
+
+            slots = new[] { pb1, pb2, pb3, pb4 };
+
+            foreach (var pb in slots)
+                pb.Click += Slot_Click;
+            currentUserId = userId;
+        }
+
+        private void captchaForm_Load(object sender, EventArgs e)
+        {
+            for (int i = 0; i < slots.Length; i++)
+                slots[i].Tag = i;
+
+            ShuffleImages();
+        }
+
+        private void ShuffleImages()
+        {
+            var parts = new (Image img, int id)[slots.Length];
+
+            for (int i = 0; i < slots.Length; i++)
+                parts[i] = ((Image)slots[i].Image.Clone(), (int)slots[i].Tag);
+
+            Random r = new Random();
+
+            for (int i = 0; i < parts.Length; i++)
+            {
+                int j = r.Next(parts.Length);
+                (parts[i], parts[j]) = (parts[j], parts[i]);
+            }
+
+            for (int i = 0; i < slots.Length; i++)
+            {
+                slots[i].Image = parts[i].img;
+                slots[i].Tag = parts[i].id;
+            }
+        }
+
+        private void Slot_Click(object sender, EventArgs e)
+        {
+            var clicked = (PictureBox)sender;
+
+            if (firstSelected == null)
+            {
+                firstSelected = clicked;
+                clicked.BorderStyle = BorderStyle.Fixed3D;
+                return;
+            }
+
+            if (firstSelected != clicked)
+            {
+                (firstSelected.Image, clicked.Image) = (clicked.Image, firstSelected.Image);
+                (firstSelected.Tag, clicked.Tag) = (clicked.Tag, firstSelected.Tag);
+            }
+
+            firstSelected.BorderStyle = BorderStyle.None;
+            firstSelected = null;
+        }
+
+        private void btnCaptchaCheck_Click(object sender, EventArgs e)
+        {
+            bool ok = true;
+
+            for (int i = 0; i < slots.Length; i++)
+                if ((int)slots[i].Tag != i)
+                    ok = false;
+
+            if (ok)
+            {
+                MessageBox.Show("Капча пройдена!");
+                DialogResult = DialogResult.OK;
+                Close();
+                return;
+            }
+
+            fails++;
+
+            if (fails >= 3)
+            {
+                DBClass db = new DBClass();
+                string query = "UPDATE user SET is_blocked = 1 WHERE user_id = @currentUserId";
+                var parameters = new Dictionary<string, object>
+                {
+                    { "@currentUserId", currentUserId }
+                };
+                db.Execute(query, parameters);
+                MessageBox.Show("Вы заблокированы. Обратитесь к администратору");
+                DialogResult = DialogResult.No;
+                Close();
+            }
+            else
+            {
+                MessageBox.Show($"Неверно. Попыток осталось: {3 - fails}");
+            }
+        }
+    }
+}
+
+using Media_diary.Forms;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+
+namespace Media_diary
+{
+    public partial class CollectionCreateForm : Form
+    {
+        private int currentUserId;
+        public CollectionCreateForm(int userId)
+        {
+            currentUserId = userId;
+            InitializeComponent();
+            LoadMedia();
+        }
+
+        string mediaName;
+        string collectionName;
+
+        private void btnAddMedia_Click(object sender, EventArgs e)
+        {
+            mediaName = tbMediaName.Text.Trim();
+            collectionName = tbCollectionName.Text.Trim();
+
+            if (string.IsNullOrEmpty(mediaName) || string.IsNullOrEmpty(collectionName))
+            {
+                MessageBox.Show("Заполните все поля");
+                return;
+            }
+
+            DBClass db = new DBClass();
+            string query = "SELECT media_id FROM media WHERE title = @mediaName";
+            var parameters = new Dictionary<string, object>
+            {
+                { "@mediaName", mediaName }
+            };
+            DataTable media = db.Select(query, parameters); // находим медиа, как написано
+
+            if (media.Rows.Count == 0)
+            {
+                var result = MessageBox.Show("Такого медиа не существует. Хотите добавить?", "Предупреждение" ,MessageBoxButtons.YesNo); //не нашли
+                if (DialogResult.Yes == result)
+                {
+                    Hide();
+
+                    MediaCreateForm mediaCreateForm = new MediaCreateForm();
+                    mediaCreateForm.ShowDialog();
+
+                    LoadMedia();
+                    Show();
+                }
+                return;
+            }
+
+            int mediaId = Convert.ToInt32(media.Rows[0][0]); //нашли
+            string selCollectionQuery = "SELECT collection_id FROM collection WHERE name_collection = @collectionName AND user_id_collection = @currentUserId";
+            var selCollectionParameters = new Dictionary<string, object>
+            {
+                { "@collectionName", collectionName},
+                { "@currentUserId", currentUserId}
+            };
+            DataTable collection = db.Select(selCollectionQuery, selCollectionParameters); // находим коллекцию
+
+            if (collection.Rows.Count > 0) // нашли                если есть коллекция, то просто добавляем в нее медиа, если нет - создаем коллекцию и добавляем в нее медиа
+            {
+                int collectionId = Convert.ToInt32(collection.Rows[0][0]);
+                string mediaInCollectionQuery = "SELECT COUNT(*) as Count FROM media_has_collection WHERE media_media_id = @mediaId AND collection_collection_id = @collectionId";
+                var mediaInCollectionParameters = new Dictionary<string, object>
+                {
+                    { "@mediaId", mediaId },
+                    { "@collectionId", collectionId }
+                };
+                DataTable mediaInCollection = db.Select(mediaInCollectionQuery, mediaInCollectionParameters);
+
+                int count = Convert.ToInt32(mediaInCollection.Rows[0]["Count"]);
+
+                if (count > 0)
+                {
+                    MessageBox.Show($"Данное медиа уже добавлено в подборку '{collectionName}'");
+                    LoadMediaFromCollection();
+                    return;
+                }
+                string insMHCQuery = "INSERT INTO media_has_collection (media_media_id, collection_collection_id) VALUES (@mediaId, @collectionId);";
+                var insMHSParameters = new Dictionary<string, object>
+                {
+                    { "@mediaId", mediaId },
+                    { "@collectionId", collectionId}
+                };
+                db.Execute(insMHCQuery, insMHSParameters);
+
+                MessageBox.Show("Медиа успешно добавлено.");
+            }
+
+            else //не нашли - создаем новую
+            {
+                string insCollectionQuery = "INSERT INTO collection (name_collection, user_id_collection) VALUES (@collectionName, @currentUserId);";
+                var insCollectionParameters = new Dictionary<string, object>
+                {
+                    { "@collectionName", collectionName },
+                    { "@currentUserId", currentUserId}
+                };
+                db.Execute(insCollectionQuery, insCollectionParameters);
+
+                string selLastCollectionQuery = "SELECT collection_id FROM collection WHERE name_collection = @collectionName";
+                var selLastCollectionParameters = new Dictionary<string, object>
+            {
+                { "@collectionName", collectionName}
+            };
+                DataTable lastCollection = db.Select(selLastCollectionQuery, selLastCollectionParameters); // находим коллекцию
+                int collectionId = Convert.ToInt32(lastCollection.Rows[0][0]);
+
+                string insMHCQuery = "INSERT INTO media_has_collection (media_media_id, collection_collection_id) VALUES (@mediaId, @collectionId);";
+                var insMHSParameters = new Dictionary<string, object>
+                {
+                    { "@mediaId", mediaId },
+                    { "@collectionId", collectionId}
+                };
+                db.Execute(insMHCQuery, insMHSParameters);
+                MessageBox.Show("Медиа успешно добавлено.");
+            }
+            LoadMediaFromCollection();
+        }
+
+        private void btnSaveQuote_Click(object sender, EventArgs e)
+        {
+            var result = MessageBox.Show("Вы уверены, что хотите сохранить коллекцию?", "Предупреждение", MessageBoxButtons.YesNo);
+
+            if (DialogResult.Yes == result)
+            {
+                Close();
+            }
+            else
+            {
+                MessageBox.Show("Коллекция не сохранена.");
+            }
+        }
+
+        private void btnCancel_Click(object sender, EventArgs e)
+        {
+            var result = MessageBox.Show("Вы уверены, что хотите выйти?", "Предупреждение", MessageBoxButtons.YesNo);
+            if (DialogResult.Yes == result)
+            {
+                Close();
+            }
+        }
+        private void LoadMedia()
+        {
+            //dgvMedia.Rows.Clear();
+
+            DBClass db = new DBClass();
+            DataTable media = db.Select("SELECT * FROM media;");
+            dgvMedia.DataSource = media;
+        }
+
+        private void LoadMediaFromCollection()
+        {
+            DBClass db = new DBClass();
+
+            string selCollectionQuery = "SELECT collection_id FROM collection WHERE name_collection = @collectionName AND user_id_collection = @currentUserId";
+            var selCollectionParameters = new Dictionary<string, object>
+            {
+                { "@collectionName", collectionName},
+                { "@currentUserId", currentUserId}
+            };
+            DataTable table = db.Select(selCollectionQuery, selCollectionParameters); // находим коллекцию
+            int collectionId = Convert.ToInt32(table.Rows[0][0]);
+
+            string MFSQuery = "SELECT media_media_id FROM media_has_collection WHERE collection_collection_id = @collectionId";
+            var MFSParameters = new Dictionary<string, object>
+            {
+                { "@collectionId", collectionId }
+            };
+            DataTable mediaFromCollection = db.Select(MFSQuery, MFSParameters);
+
+            DataTable collection = new DataTable();
+
+            if (mediaFromCollection.Rows.Count > 0)
+            {
+                int firstMediaId = Convert.ToInt32(mediaFromCollection.Rows[0][0]);
+                string firstMediaQuery = "SELECT * FROM media WHERE media_id = @firstMediaId";
+                var firstMediaParameters = new Dictionary<string, object>
+                {
+                    { "@firstMediaId", firstMediaId }
+                };
+                DataTable firstMedia = db.Select(firstMediaQuery, firstMediaParameters);
+                collection = firstMedia.Clone(); // клонируем структуру таблицы
+            }
+                        
+            for (int i = 0; i < mediaFromCollection.Rows.Count; i++) // собираем все медиа в одну таблицу
+            {
+                int mediaId = Convert.ToInt32(mediaFromCollection.Rows[i][0]);
+                string mediaQuery = "SELECT * FROM media WHERE media_id = @mediaId";
+                var mediaParameters = new Dictionary<string, object>
+                {
+                    { "@mediaId", mediaId }
+                };
+                DataTable media = db.Select(mediaQuery, mediaParameters);
+
+                foreach (DataRow row in media.Rows)
+                {
+                    collection.ImportRow(row);
+                }
+            }
+
+            dgvCollection.DataSource = collection;
+        }
+
+        private void dgvMedia_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+            try
+            {
+                AddMediaToCollectionаFromDGV();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+        }
+        private void AddMediaToCollectionаFromDGV()
+        {
+            collectionName = tbCollectionName.Text.Trim();
+            string mediaId = dgvMedia.CurrentRow.Cells[0].Value.ToString();
+
+            if (string.IsNullOrEmpty(collectionName))
+            {
+                MessageBox.Show("Напишите имя подборки");
+                return;
+            }
+
+            DBClass db = new DBClass();
+
+            string selCollectionQuery = "SELECT collection_id FROM collection WHERE name_collection = @collectionName AND user_id_collection = @currentUserId";
+            var selCollectionParameters = new Dictionary<string, object>
+            {
+                { "@collectionName", collectionName},
+                { "@currentUserId", currentUserId}
+            };
+            DataTable collection = db.Select(selCollectionQuery, selCollectionParameters); // находим коллекцию
+
+            if (collection.Rows.Count > 0) // нашли                если есть коллекция, то просто добавляем в нее медиа, если нет - создаем коллекцию и добавляем в нее медиа
+            {
+                int collectionId = Convert.ToInt32(collection.Rows[0][0]);
+
+                string mediaInCollectionQuery = "SELECT COUNT(*) as Count FROM media_has_collection WHERE media_media_id = @mediaId AND collection_collection_id = @collectionId";
+                var mediaInCollectionParameters = new Dictionary<string, object>
+                {
+                    { "@mediaId", mediaId },
+                    { "@collectionId", collectionId }
+                };
+                DataTable mediaInCollection = db.Select(mediaInCollectionQuery, mediaInCollectionParameters);
+
+                int count = Convert.ToInt32(mediaInCollection.Rows[0]["Count"]);
+
+                if (count > 0)
+                {
+                    MessageBox.Show($"Данное медиа уже добавлено в подборку '{collectionName}'");
+                    LoadMediaFromCollection();
+                    return;
+                }
+
+                string insMHCQuery = "INSERT INTO media_has_collection (media_media_id, collection_collection_id) VALUES (@mediaId, @collectionId);";
+                var insMHSParameters = new Dictionary<string, object>
+                {
+                    { "@mediaId", mediaId },
+                    { "@collectionId", collectionId}
+                };
+                db.Execute(insMHCQuery, insMHSParameters);
+
+                MessageBox.Show("Медиа успешно добавлено.");
+            }
+
+            else //не нашли - создаем новую
+            {
+                string insCollectionQuery = "INSERT INTO collection (name_collection, user_id_collection) VALUES (@collectionName, @currentUserId);";
+                var insCollectionParameters = new Dictionary<string, object>
+                {
+                    { "@collectionName", collectionName },
+                    { "@currentUserId", currentUserId}
+                };
+                db.Execute(insCollectionQuery, insCollectionParameters);
+
+                string selLastCollectionQuery = "SELECT collection_id FROM collection WHERE name_collection = @collectionName";
+                var selLastCollectionParameters = new Dictionary<string, object>
+            {
+                { "@collectionName", collectionName}
+            };
+                DataTable lastCollection = db.Select(selLastCollectionQuery, selLastCollectionParameters); // находим коллекцию
+                int collectionId = Convert.ToInt32(lastCollection.Rows[0][0]);
+
+                string insMHCQuery = "INSERT INTO media_has_collection (media_media_id, collection_collection_id) VALUES (@mediaId, @collectionId);";
+                var insMHSParameters = new Dictionary<string, object>
+                {
+                    { "@mediaId", mediaId },
+                    { "@collectionId", collectionId}
+                };
+                db.Execute(insMHCQuery, insMHSParameters);
+                MessageBox.Show("Медиа успешно добавлено.");
+            }
+            LoadMediaFromCollection();
+        }
+    }
+}
+
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Media_diary
+{
+    public partial class CollectionForm : Form
+    {
+        private int currentUserId;
+        public CollectionForm(int userId)
+        {
+            InitializeComponent();
+            currentUserId = userId;
+            LoadData();
+        }
+        public void LoadData()
+        {
+            DBClass db = new DBClass();
+            string reviewQuery = @"SELECT r.review_id, m.title AS 'Медиа', r.review AS 'Отзыв', r.rating AS 'Оценка'
+                                            FROM review r 
+                                            JOIN media m ON m.media_id = r.media_id_review
+                                            WHERE user_id = @currentUserId;";
+            var reviewParameters = new Dictionary<string, object>
+            {
+                { "@currentUserId", currentUserId }
+            };
+            DataTable review = db.Select(reviewQuery, reviewParameters);
+
+            string quoteQuery = @"SELECT quote_id, m.title AS 'Медиа', q.text AS 'Цитата' 
+                                            FROM quote q
+                                            JOIN media m ON q.media_id_quote = m.media_id
+                                            WHERE user_id_quote = @currentUserId;";
+            var quoteParameters = new Dictionary<string, object>
+            {
+                { "@currentUserId", currentUserId }
+            };
+            DataTable quote = db.Select(quoteQuery, quoteParameters);
+            dgvReview.DataSource = review;
+            dgvReview.Columns["review_id"].Visible = false;
+            dgvQuote.DataSource = quote;
+            dgvQuote.Columns["quote_id"].Visible = false;
+        }
+        private void btnAddReview_Click(object sender, EventArgs e)
+        {
+            ReviewCreateForm reviewCreateForm = new ReviewCreateForm(currentUserId);
+            reviewCreateForm.ShowDialog();
+            LoadData();
+        }
+
+        private void btnAddQuote_Click(object sender, EventArgs e)
+        {
+            QuoteCreateForm quoteCreateForm = new QuoteCreateForm(currentUserId);
+            quoteCreateForm.ShowDialog();
+            LoadData();
+        }
+
+        private void btnBack_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }
+
+        private void btnDeleteReview_Click(object sender, EventArgs e)
+        {
+            var result = MessageBox.Show("Вы уверены, что хотите удалить отзыв?", "Предупреждение", MessageBoxButtons.YesNo);
+            if (result == DialogResult.No)
+            {
+                return;
+            }
+            int selectedReviewId = Convert.ToInt32(dgvReview.CurrentRow.Cells[0].Value); 
+            DBClass db = new DBClass();
+            string selReviewQuery = "DELETE FROM media_reviews.review WHERE (review_id = @selectedReviewId);";
+            var selReviewParameters = new Dictionary<string, object>
+            {
+                { "@selectedReviewId", selectedReviewId }
+            };
+            db.Execute(selReviewQuery, selReviewParameters);
+            LoadData();
+        }
+
+        private void btnDeleteQuote_Click(object sender, EventArgs e)
+        {
+            var result = MessageBox.Show("Вы уверены, что хотите удалить избранное?", "Предупреждение", MessageBoxButtons.YesNo);
+            if (result == DialogResult.No)
+            {
+                return;
+            }
+            int selectedQuoteId = Convert.ToInt32(dgvQuote.CurrentRow.Cells[0].Value); 
+            DBClass db = new DBClass();
+            string selQuoteQuery = "DELETE FROM media_reviews.quote WHERE (quote_id = @selectedQuoteId);";
+            var selQuoteParameters = new Dictionary<string, object>
+            {
+                { "@selectedQuoteId", selectedQuoteId }
+            };
+            db.Execute(selQuoteQuery, selQuoteParameters);
+            LoadData();
+        }
+    }
+}
+
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using MySql.Data.MySqlClient;
+
+namespace Media_diary
+{
+    public partial class LoginForm : Form
+    {
+        public LoginForm()
+        {
+            InitializeComponent();
+        }
+
+        private void btnRegister_Click(object sender, EventArgs e)
+        {
+            Hide();
+
+            RegisterForm registerForm = new RegisterForm();
+            registerForm.ShowDialog();
+
+            Show();
+        }
+
+        private void btnLogin_Click(object sender, EventArgs e)
+        {
+            string username = tbLogin.Text.Trim();
+            string password = tbPassword.Text.Trim();
+
+            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+            {
+                MessageBox.Show("Введите логин и/или пароль.");
+                return;
+            }
+
+            try // ищем пользователя
+            {
+                DBClass db = new DBClass();
+                string query = "SELECT * FROM user WHERE username = @username";
+                var parameters = new Dictionary<string, object>
+                {
+                    { "@username",  username }
+                };
+                DataTable user = db.Select(query, parameters);
+                if (user.Rows.Count == 0)
+                {
+                    MessageBox.Show("Такого пользователя не существует.");
+                    return;
+                }
+                string passwordHash = user.Rows[0]["password"].ToString();
+                if (!BCrypt.Net.BCrypt.Verify(password, passwordHash))
+                {
+                    MessageBox.Show("Неверный логин или пароль. Проверьте корректность ввода или обратитесь к администратору.");
+                    return;
+                }
+                int userId = Convert.ToInt32(user.Rows[0]["user_id"]);
+                string userRole = user.Rows[0]["role"].ToString().Trim();
+                int isBlocked = Convert.ToInt32(user.Rows[0]["is_blocked"]);
+                if (isBlocked == 1)
+                {
+                    MessageBox.Show("Ваш аккаунт заблокирован. Обратитесь к администратору.");
+                    return;
+                }
+                else
+                {
+                    if (userRole == "admin")
+                    {
+                        Hide();
+
+                        MainAdminForm form = new MainAdminForm(userId);
+                        form.ShowDialog();
+
+                        Show();
+                    }
+                    else if (userRole == "user")
+                    {
+                        CaptchaForm captchaForm = new CaptchaForm(userId);
+                        if (captchaForm.ShowDialog() == DialogResult.OK)
+                        {
+                            Hide();
+
+                            MainUserForm form = new MainUserForm(userId);
+                            form.ShowDialog();
+
+                            Show();
+                        }
+                        else if (captchaForm.DialogResult == DialogResult.No)
+                        {
+                            MessageBox.Show("Ваш аккаунт заблокирован. Обратитесь к администратору.");
+                        }
+                        else { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+        }
+
+        private void pbPassword_Click(object sender, EventArgs e)
+        {
+            if (tbPassword.PasswordChar == '•')
+            {
+                tbPassword.PasswordChar = '\0';
+                pbPassword.Image = Properties.Resources.openEye;
+            }
+            else
+            {
+                tbPassword.PasswordChar = '•';
+                pbPassword.Image = Properties.Resources.closedEye;
+            }
+        }
+    }
+}
+
+
+using Media_diary.Forms;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Media_diary
+{
+    public partial class MainAdminForm : Form
+    {
+        int userId;
+        string currentTable;
+        string currentIdColumn;
+        public MainAdminForm(int userId)
+        {
+            InitializeComponent();
+            this.userId = userId;
+        }
+        public void LoadData()
+        {
+            try
+            {
+                DataTable table;
+                DBClass db = new DBClass();
+                switch (currentTable)
+                {
+                    case "user":
+                        btnAdd.Visible = true;
+                        lblAdmin.Text = "Пользователи";
+                        table = db.Select(@"SELECT 
+                        user_id,
+                        login AS 'Имя',
+                        username AS 'Логин',
+                        CASE 
+                            WHEN is_blocked = 0 THEN 'Активен'
+                            ELSE 'Заблокирован'
+                        END AS 'Статус',
+                        role AS 'Роль'
+                    FROM user;");
+                        dgvAdmin.DataSource = table;
+                        dgvAdmin.Columns["user_id"].Visible = false;
+                        break;
+
+                    case "media":
+                        btnAdd.Visible = true;
+                        lblAdmin.Text = "Медиа";
+                        table = db.Select(@"SELECT 
+                        media_id, 
+                        title AS 'Название', 
+                        type AS 'Вид', 
+                        description AS 'Описание', 
+                        release_year AS 'Год выпуска', 
+                        genre AS 'Жанр', 
+                        author AS 'Автор' 
+                    FROM media;");
+                        dgvAdmin.DataSource = table;
+                        dgvAdmin.Columns["media_id"].Visible = false;
+                        break;
+
+                    case "collection":
+                        btnAdd.Visible = true;
+                        lblAdmin.Text = "Подборки";
+                        table = db.Select(@"SELECT collection_id, 
+                        name_collection AS 'Название'
+                    FROM collection;");
+                        dgvAdmin.DataSource = table;
+                        dgvAdmin.Columns["collection_id"].Visible = false;
+                        break;
+
+                    case "quote":
+                        btnAdd.Visible = false;
+                        lblAdmin.Text = "Цитаты";
+                        table = db.Select(@"SELECT quote_id, m.title AS 'Медиа', q.text AS 'Цитата', u.username AS 'Имя пользователя' 
+                                            FROM quote q
+                                            JOIN media m ON q.media_id_quote = m.media_id
+                                            JOIN user u ON q.user_id_quote = u.user_id;");
+                        dgvAdmin.DataSource = table;
+                        dgvAdmin.Columns["quote_id"].Visible = false;
+                        break;
+
+                    case "review":
+                        btnAdd.Visible = false;
+                        lblAdmin.Text = "Отзывы";
+                        table = db.Select(@"SELECT r.review_id, m.title AS 'Медиа', r.review AS 'Отзыв', r.rating AS 'Оценка', u.username AS 'Имя пользователя'
+                                            FROM review r 
+                                            JOIN media m ON m.media_id = r.media_id_review
+                                            JOIN user u ON r.user_id = u.user_id;");
+                        dgvAdmin.DataSource = table;
+                        dgvAdmin.Columns["review_id"].Visible = false;
+                        break;
+
+                    default:
+                        MessageBox.Show("Неизвестный тип таблицы.");
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+        }
+
+        private void tsmiUser_Click(object sender, EventArgs e)
+        {
+            currentTable = "user";
+            currentIdColumn = "user_id";
+            LoadData();
+        }
+
+        private void tsmiMedia_Click(object sender, EventArgs e)
+        {
+            currentTable = "media";
+            currentIdColumn = "media_id";
+            LoadData();
+        }
+
+        private void tsmiCollection_Click(object sender, EventArgs e)
+        {
+            currentTable = "collection";
+            currentIdColumn = "collection_id";
+            LoadData();
+        }
+
+        private void tsmiQuote_Click(object sender, EventArgs e)
+        {
+            currentTable = "quote";
+            currentIdColumn = "quote_id";
+            LoadData();
+        }
+
+        private void tsmiReview_Click(object sender, EventArgs e)
+        {
+            currentTable = "review";
+            currentIdColumn = "review_id";
+            LoadData();
+        }
+
+        private void btnAdd_Click(object sender, EventArgs e)
+        {
+            switch (currentTable)
+            {
+                case "user":
+                    Hide();
+                    UserCreateForm userCreateForm = new UserCreateForm();
+                    userCreateForm.ShowDialog();
+                    Show();
+                    LoadData();
+                    break;
+                case "media":
+                    Hide();
+                    MediaCreateForm mediaCreateForm = new MediaCreateForm();
+                    mediaCreateForm.ShowDialog();
+                    Show();
+                    LoadData();
+                    break;
+                case "collection":
+                    Hide();
+                    CollectionCreateForm collectionCreateForm = new CollectionCreateForm(userId);
+                    collectionCreateForm.ShowDialog();
+                    Show();
+                    LoadData();
+                    break;
+            }
+        }
+
+        private void btnDelete_Click(object sender, EventArgs e)
+        {
+            var result = MessageBox.Show("Вы уверены, что хотите удалить элемент?", "Предупреждение", MessageBoxButtons.YesNo);
+            if (result == DialogResult.No)
+            {
+                return;
+            }
+            int selectedId = Convert.ToInt32(dgvAdmin.CurrentRow.Cells[0].Value);
+            DBClass db = new DBClass();
+            if (currentTable == "collection")
+            {
+                string MHSQuery = $@"DELETE FROM media_has_collection WHERE collection_collection_id = @selectedId";
+                var MHSParameters = new Dictionary<string, object>
+            {
+                { "@selectedId", selectedId }
+            };
+                db.Execute(MHSQuery, MHSParameters);
+
+                string query = $@"DELETE FROM collection WHERE collection_id = @selectedId";
+                var parameters = new Dictionary<string, object>
+            {
+                { "@selectedId", selectedId }
+            };
+                db.Execute(query, parameters);
+            }
+            else
+            {
+                string query = $@"DELETE FROM {currentTable} WHERE {currentIdColumn} = @selectedId";
+                var parameters = new Dictionary<string, object>
+            {
+                { "@selectedId", selectedId }
+            };
+                db.Execute(query, parameters);
+            }
+            LoadData();
+        }
+
+        private void btnSwitchAccount_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }
+    }
+}
+
+
+using Media_diary.Forms;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Media_diary
+{
+    public partial class MainUserForm : Form
+    {
+        private int currentUserId;
+        public MainUserForm(int userId)
+        {
+            InitializeComponent();
+            currentUserId = userId;
+            LoadData();
+        }
+
+        public void LoadData()
+        {
+            DBClass db = new DBClass();
+            string nameCollection = "SELECT name_collection AS 'Название подборки' FROM collection WHERE user_id_collection = @currentUserId OR user_id_collection = 1";
+            var ncparameters = new Dictionary<string, object>
+            {
+                { "@currentUserId", currentUserId }
+            };
+            DataTable table = db.Select(nameCollection, ncparameters);
+            dgvCollection.DataSource = table;
+            string recQuery = @"SELECT 
+    m.media_id,
+    m.title AS 'Название',
+    m.genre AS 'Жанр',
+    m.author AS 'Автор',
+    COUNT(*) AS score
+FROM
+    media m
+        JOIN
+    review r ON r.user_id = @currentUserId
+        JOIN
+    media reviewed_media ON reviewed_media.media_id = r.media_id_review
+WHERE
+    (m.genre = reviewed_media.genre
+        OR m.author = reviewed_media.author
+        OR m.type = reviewed_media.type)
+        AND m.media_id NOT IN (SELECT 
+            media_id_review
+        FROM
+            review
+        WHERE
+            user_id = @currentUserId)
+GROUP BY m.media_id , m.title , m.genre , m.author
+ORDER BY score DESC
+LIMIT 3;";
+            var recParameters = new Dictionary<string, object>
+            {
+                { "@currentUserId", currentUserId }
+            };
+            DataTable rec = db.Select(recQuery, recParameters);
+            if (rec.Rows.Count == 0)
+            {
+                label2.Text = "Здесь будут ваши рекомендации:";
+                return;
+            }
+            dgvRecommend.DataSource = rec;
+            dgvRecommend.Columns["media_id"].Visible = false;
+            dgvRecommend.Columns["score"].Visible = false;
+        }
+        private void btnCollection_Click(object sender, EventArgs e)
+        {
+            Hide();
+
+            CollectionForm collectionForm = new CollectionForm(currentUserId);
+            collectionForm.ShowDialog();
+
+            Show();
+            LoadData();
+        }
+
+        private void btnSwitchAccount_Click(object sender, EventArgs e)
+        {
+            Close();
+        }
+
+        private void btnCreateCollection_Click(object sender, EventArgs e)
+        {
+            CollectionCreateForm collectionCreateForm = new CollectionCreateForm(currentUserId);
+            collectionCreateForm.ShowDialog();
+
+            LoadData();
+        }
+        private void dgvCollection_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+            int collectionId = Convert.ToInt32(dgvCollection.CurrentRow.Cells[0].Value);
+            Hide();
+            MediaInCollectionForm mediaInCollectionForm = new MediaInCollectionForm(currentUserId, collectionId);
+            mediaInCollectionForm.ShowDialog();
+            LoadData();
+            Show();
+        }
+    }
+}
+
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Media_diary.Forms
+{
+    public partial class MediaCreateForm : Form
+    {
+        public MediaCreateForm()
+        {
+            InitializeComponent();
+        }
+
+        private void btnCancel_Click(object sender, EventArgs e)
+        {
+            var result = MessageBox.Show("Вы уверены, что хотите отменить создание? Все несохраненные данные будут потеряны.", "Подтверждение", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (result == DialogResult.Yes) 
+            {
+                this.Close();
+            }
+        }
+
+        private void btnSaveReview_Click(object sender, EventArgs e)
+        {
+            string name = tbNameMedia.Text;
+            string type = cbTypeMedia.Text;
+            string genre = cbGenreMedia.Text;
+            string author = tbAuthorMedia.Text;
+            string yearSTR = tbYearMedia.Text;
+            int? year;
+            if (string.IsNullOrEmpty(yearSTR))
+            {
+                year = 0;
+            }
+            else
+            {
+                year = Convert.ToInt32(yearSTR);
+            }
+            string description = rtbDescription.Text;
+
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(genre))
+            {
+                MessageBox.Show("Пожалуйста, заполните все обязательные поля.");
+                return;
+            }
+
+            DBClass db = new DBClass();
+            DataTable media = db.Select($"SELECT * FROM media WHERE title = '{name}' AND type = '{type}' AND genre = '{genre}';");
+            if (media.Rows.Count > 0)
+            {
+                MessageBox.Show("Такое медиа уже существует.");
+                return;
+            }
+            try
+            {
+                string query = "INSERT INTO media (title, type, genre, author, release_year, description) VALUES (@name, @type, @genre, @author, @year, @description);";
+                var parameters = new Dictionary<string, object>
+                {
+                    { "@name", name },
+                    { "@type", type },
+                    { "@genre", genre },
+                    { "@author", author },
+                    { "@year", year },
+                    { "@description", description }
+                };
+                db.Execute(query, parameters);
+                var result = MessageBox.Show("Вы уверены, что хотите сохранить это медиа? Вы не сможете изменить его позже.", "Подтверждение", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (result == DialogResult.No) 
+                {
+                    return;
+                }
+                MessageBox.Show("Медиа успешно добавлено!");
+                this.Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка при сохранении данных: " + ex.Message);
+            }
+        }
+    }
+}
+
+
+using Media_diary.Forms;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Media_diary
+{
+    public partial class QuoteCreateForm : Form
+    {
+        int currentUserId;
+        public QuoteCreateForm(int userId)
+        {
+            InitializeComponent();
+            currentUserId = userId;
+        }
+        private void btnSaveQuote_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string nameQuote = tbNameQuote.Text.Trim();
+
+                if (string.IsNullOrEmpty(nameQuote))
+                {
+                    MessageBox.Show("Введите название медиа.");
+                    return;
+                }
+
+                DBClass db = new DBClass();
+                string selectQuery = "SELECT media_id FROM media WHERE title = @nameQuote";
+                var selectParameters = new Dictionary<string, object>
+                {
+                    { "@nameQuote", nameQuote }
+                };
+                DataTable media = db.Select(selectQuery, selectParameters);
+
+                if (media.Rows.Count == 0)
+                {
+                    var result = MessageBox.Show("Такого медиа не существует. Хотите добавить?", "Предупреждение", MessageBoxButtons.YesNo); //не нашли
+                    if (DialogResult.Yes == result)
+                    {
+                        Hide();
+                        MediaCreateForm mediaCreateForm = new MediaCreateForm();
+                        mediaCreateForm.ShowDialog();
+                        Show();
+                    }
+                    return;
+                }
+
+                int idMedia = Convert.ToInt32(media.Rows[0][0]);
+                string quoteText = rtbQuote.Text.Trim();
+
+                if (string.IsNullOrEmpty(quoteText))
+                {
+                    MessageBox.Show("Введите текст цитаты перед сохранением.");
+                    return;
+                }
+
+                string query = "INSERT INTO quote (text, media_id_quote, user_id_quote) VALUES (@quoteText, @idMedia, @currentUserId);";
+                var parameters = new Dictionary<string, object>
+                {
+                    { "@quoteText", quoteText },
+                    { "@idMedia", idMedia },
+                    { "@currentUserId", currentUserId }
+                };
+                db.Execute(query, parameters);
+
+                MessageBox.Show("Цитата успешно сохранена.");
+                Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка при сохранении цитаты: " + ex);
+            }
+        }
+
+        private void btnCancel_Click(object sender, EventArgs e)
+        {
+            Close();
+        }
+    }
+}
+
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Media_diary
+{
+    public partial class RegisterForm : Form
+    {
+        public RegisterForm()
+        {
+            InitializeComponent();
+        }
+
+        private void btnRegister_Click(object sender, EventArgs e)
+        {
+            string login = tbLogin.Text.Trim();
+            string username = tbUsername.Text.Trim();
+            string password = tbPassword.Text.Trim();
+            string repeatPassword = tbRepeatPassword.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(login) || string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password) || string.IsNullOrWhiteSpace(repeatPassword))
+            {
+                MessageBox.Show("Введите логин и/или пароль.");
+                return;
+            }
+            if (password != repeatPassword)
+            {
+                MessageBox.Show("Пароли не совпадают.");
+                return;
+            }
+            try
+            {
+                string passwordHash = BCrypt.Net.BCrypt.HashPassword(password);
+                DBClass db = new DBClass();
+                string checkQuery = "SELECT COUNT(*) FROM user WHERE username = @username;";
+                var checkParameters = new Dictionary<string, object>
+                {
+                    { "@username", username }
+                };
+                DataTable table = db.Select(checkQuery, checkParameters);
+                int userCount = Convert.ToInt32(table.Rows[0][0]);
+                if (userCount > 0)
+                {
+                    MessageBox.Show("Пользователь с таким именем уже существует.");
+                    return;
+                }
+                string query = "INSERT INTO user (login, username, password) VALUES (@login, @username, @passwordHash);";
+                var parameters = new Dictionary<string, object>
+                {
+                    { "@login", login},
+                    { "@username", username },
+                    { "@passwordHash", passwordHash }
+                };
+                db.Execute(query, parameters);
+                string selectQuery = "SELECT user_id FROM user WHERE username = @username AND password = @passwordHash;";
+                var selectParameters = new Dictionary<string, object>
+                {
+                    { "@username", username },
+                    { "@passwordHash", passwordHash }
+                };
+                int userId = db.Select(selectQuery, selectParameters).Rows[0].Field<int>("user_id");
+                MessageBox.Show("Регистрация прошла успешно!");
+                this.Hide();
+
+                MainUserForm form = new MainUserForm(userId);
+                form.ShowDialog();
+
+                this.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка при регистрации: " + ex.Message);
+            }
+        }
+
+        private void btnlogin_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }
+    }
+}
+
+
+using Media_diary.Forms;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace Media_diary
+{
+    public partial class ReviewCreateForm : Form
+    {
+        int currentUserId;
+        public ReviewCreateForm(int userId)
+        {
+            InitializeComponent();
+            currentUserId = userId;
+        }
+
+        private void btnSaveReview_Click(object sender, EventArgs e)
+        {
+            string nameMedia = tbNameMedia.Text.Trim();
+            string reviewText = rtbReview.Text.Trim();
+            int ratingMedia = Convert.ToInt32(cbRatingMedia.SelectedItem);
+
+            if (nameMedia != "" && cbRatingMedia.SelectedItem != null)
+            {
+                try
+                {
+                    DBClass db = new DBClass();
+                    string selectQuery = "SELECT media_id FROM media WHERE title = @nameMedia";
+                    var selectParameters = new Dictionary<string, object>
+                    {
+                        { "@nameMedia", nameMedia }
+                    };
+                    DataTable media = db.Select(selectQuery, selectParameters);
+                    if (media.Rows.Count > 0)
+                    {
+                        int mediaId = Convert.ToInt32(media.Rows[0]["media_id"]);
+                        string query = "INSERT INTO review (user_id, media_id_review, rating, review) VALUES (@currentUserId, @mediaId, @ratingMedia, @reviewText)";
+                        var parameters = new Dictionary<string, object>
+                        {
+                            { "@currentUserId", currentUserId },
+                            { "@mediaId", mediaId },
+                            { "@ratingMedia", ratingMedia },
+                            { "@reviewText", reviewText }
+                        };
+                        db.Execute(query, parameters);
+                        MessageBox.Show("Отзыв успешно добавлен.");
+                        this.Close();
+                    }
+                    else
+                    {
+                        var result = MessageBox.Show("Такого медиа не существует. Хотите добавить?", "Предупреждение", MessageBoxButtons.YesNo); //не нашли
+                        if (DialogResult.Yes == result)
+                        {
+                            Hide();
+                            MediaCreateForm mediaCreateForm = new MediaCreateForm();
+                            mediaCreateForm.ShowDialog();
+                            Show();
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Ошибка при сохранении отзыва: " + ex.Message);
+                }
+            }
+            else
+            {
+                MessageBox.Show("Пожалуйста, заполните все поля.");
+            }
+        }
+
+        private void btnCancel_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }
+    }
+}
